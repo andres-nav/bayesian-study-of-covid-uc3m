@@ -1,0 +1,666 @@
+---
+title: "Lab Bayesian"
+author: "Andres Navarro"
+date: "2023-04-25"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+setwd("/home/me/MEGA/Uni/3YEAR/Q2/01\ Bayesian Analysis/Lab")
+
+library(unix)
+rlimit_as(1e12)  #increases to ~12GB
+```
+
+# Dataset Lookup
+
+First of all, the objective of this Case Study will be to show the advantages of Bayesian Statistics for small data sets and the ability to estimated better the posterior parameters.. As it is known, Bayesian Statistics allows as to set up prior believes of our predictors with specific probability distributions. This is really useful when we do not have a lot of data and we have some insights on the data. For this reason I have decided to use a data set with 21 variables and I will be reducing the number of observations to simulate what we are trying to show. This data is about the COVID cases in Mexico and the goal is to predict if a patient has COVID or not.
+
+[[<https://www.kaggle.com/datasets/meirnizri/covid19-dataset>][Dataset]]
+
+```{r}
+rm(list = ls())
+data = read.csv("data.csv", header = TRUE)
+dim(data)
+```
+
+```{r}
+summary(data)
+```
+
+The raw data set consists of 21 unique features and 1,048,576 unique patients. In the Boolean features, 1 means "yes" and 2 means "no". values as 97 and 99 are missing data.
+
+-   sex: 1 for female and 2 for male.
+-   age: of the patient.
+-   classification: covid test findings. Values 1-3 mean that the patient was diagnosed with covid in different
+-   degrees. 4 or higher means that the patient is not a carrier of covid or that the test is inconclusive.
+-   patient type: type of care the patient received in the unit. 1 for returned home and 2 for hospitalization.
+-   pneumonia: whether the patient already have air sacs inflammation or not.
+-   pregnancy: whether the patient is pregnant or not.
+-   diabetes: whether the patient has diabetes or not.
+-   copd: Indicates whether the patient has Chronic obstructive pulmonary disease or not.
+-   asthma: whether the patient has asthma or not.
+-   inmsupr: whether the patient is immunosuppressed or not.
+-   hypertension: whether the patient has hypertension or not.
+-   cardiovascular: whether the patient has heart or blood vessels related disease.
+-   renal chronic: whether the patient has chronic renal disease or not.
+-   other disease: whether the patient has other disease or not.
+-   obesity: whether the patient is obese or not.
+-   tobacco: whether the patient is a tobacco user.
+-   usmr: Indicates whether the patient treated medical units of the first, second or third level.
+-   medical unit: type of institution of the National Health System that provided the care.
+-   intubed: whether the patient was connected to the ventilator.
+-   icu: Indicates whether the patient had been admitted to an Intensive Care Unit.
+-   date died: If the patient died indicate the date of death, and 9999-99-99 otherwise.
+
+Here we can see a summary of the data, first we have to clean and adapt the data so we can work on it. First of all, I will create the variable that we want to predict that is if a patient has been diagnosed with COVID or not.
+
+```{r}
+data$COVID = ifelse(data$CLASIFFICATION_FINAL <= 3, 1, 2)
+data = subset(data, select = -c(CLASIFFICATION_FINAL))
+```
+
+```{r}
+convertToLogic = function(col.name, df) {
+  index = which(names(df) == col.name)
+  print(index)
+
+  if (length(index) != 0) {
+    df[, index] = ifelse(df[, index] == 2, 0, df[, index])
+    df[, index] = as.logical(df[, index])
+    
+  }
+  
+  return(df)
+}
+```
+
+This column will tell us if a patient has been diagnosed with COVID or not. Then, I will factor and format all the other variables to adapt them properly.
+
+```{r}
+data = convertToLogic("COVID", data)
+
+data$USMER = ifelse(data$USMER == 2, 0, data$USMER)
+data$USMER = as.logical(data$USMER)
+
+data$MEDICAL_UNIT = factor(data$MEDICAL_UNIT)
+
+data$SEX = factor(data$SEX, labels = c("female", "male"), levels = c(1, 2))
+
+data$PATIENT_TYPE = factor(data$PATIENT_TYPE, labels = c("returned home", "hospitalized"), levels = c(1, 2))
+
+data$INTUBED = factor(data$INTUBED, labels = c("intubed", "not intubed"), levels = c(1, 2))
+
+data$PNEUMONIA = factor(data$PNEUMONIA, labels = c("pneumonia", "not pneumonia"), levels = c(1, 2))
+
+data$PREGNANT = factor(data$PREGNANT, labels = c("pregnant", "not pregnant"), levels = c(1, 2))
+
+data$DIABETES = factor(data$DIABETES, labels = c("diabetes", "not diabetes"), levels = c(1, 2))
+
+data$COPD = factor(data$COPD, labels = c("copd", "not copd"), levels = c(1, 2))
+
+data$ASTHMA = factor(data$ASTHMA, labels = c("asthma", "not asthma"), levels = c(1, 2))
+
+data$INMSUPR = factor(data$INMSUPR, labels = c("inmsupr", "not inmsupr"), levels = c(1, 2))
+
+data$HIPERTENSION = factor(data$HIPERTENSION, labels = c("hipertension", "not hipertension"), levels = c(1, 2))
+
+data$OTHER_DISEASE = factor(data$OTHER_DISEASE, labels = c("other desease", "not other desease"), levels = c(1, 2))
+
+data$CARDIOVASCULAR = factor(data$CARDIOVASCULAR, labels = c("cardiovascular", "not cardiovascular"), levels = c(1, 2))
+
+data$OBESITY = factor(data$OBESITY, labels = c("obesity", "not obesity"), levels = c(1, 2))
+
+data$RENAL_CHRONIC = factor(data$RENAL_CHRONIC, labels = c("renal chronic", "not renal chronic"), levels = c(1, 2))
+
+data$TOBACCO = factor(data$TOBACCO, labels = c("tobacco", "not tobacco"), levels = c(1, 2))
+
+data$ICU = factor(data$ICU, labels = c("icu", "not icu"), levels = c(1, 2))
+
+data = subset(data, select = -c(DATE_DIED))
+
+```
+
+```{r}
+summary(data)
+```
+
+Here we see that the data is correctly formated but there are some missing value, so let's fix that.
+
+## Data Cleaning
+
+First we will see how manu missing values there are by rows so we can remove some columns that have a lot of missing values.
+
+```{r}
+print(length(which(is.na(data))))
+
+hist(rowMeans(is.na(data)), xlab = c("Missing values average by rows"), main = c())
+```
+
+Here we see that there are 3 columns with the most missing values.
+
+```{r}
+indexesEmptyCols = which(colMeans(is.na(data)) != 0)
+
+colsWithNA = sort(colMeans(is.na(data[, indexesEmptyCols])), 
+                  decreasing = TRUE)
+
+barplot(colsWithNA, las=2)
+```
+
+And the columns that have the most missing values are ICU, INTUBED, and PREGNANT, so let's remove them.
+
+```{r}
+data = subset(data, select = -c(ICU, INTUBED, PREGNANT))
+
+print(length(which(is.na(data))))
+```
+
+```{r}
+data = na.omit(data)
+
+length(unique(which(is.na(data))))
+```
+
+```{r}
+summary(data)
+```
+
+Now the data set is clean so let's start working on it. But first we will shrink it to 1000 observations to work with.
+
+```{r}
+data.small = data[sample(nrow(data), size=1000),]
+```
+
+
+# Bayesian Analysis of the covid variable
+
+First of all, let's plot a histogram of the COVID variable (the one we want to predict) and see.
+
+```{r}
+rm(list = setdiff(ls(), c("data", "data.small")))
+
+hist(as.numeric(data$COVID))
+```
+
+This is as we expected as we are going to be predicting a binary variable. So let's use a Bernoulli distribution to explain this data and see how well it fits. First of all lets compute the analytical posterior distribution of the covid variable.
+
+## Analytical Study
+
+1.  We assume a Bernoulli distribution for COVID, we will use X to denote that variable.
+
+$$X \ | \ \theta \thicksim Bernoulli(\theta)$$
+$$f(x \ | \ \theta) = \theta^x \cdot (1 - \theta)^x$$
+
+2. As we do not have any prior knowledge on the probability of a patient of having covid, we will define the prior distribution as an improper prior. Moreover, we will be using a Beta distribution as in the end we will get a posterior conjugate which will be much easier to work with.
+
+$$\theta \thicksim Beta(0, 0)$$
+$$f(\theta \ | \ 0, 0) = \frac{\theta^{0 - 1} \cdot (1 - \theta)^{0 - 1}}{B(0, 0)} $$
+3. Now we get the likelihood
+
+$$f(data \ | \ \theta) \propto \theta^{k} \cdot (1 - \theta)^{n - k}$$
+
+Being n the total number of observations and k the positive ones.
+
+4. And finally the posterior distribution
+
+$$f(\theta \ | \ data) = \frac{\theta^{k - 1} \cdot (1 - \theta)^{n - k - 1}}{B(k, n - k)} $$
+
+$$\theta \ | \ data \thicksim Beta(k, n - k)$$
+
+So now that we have the posterior distribution let's obtain the prediction of the next value called Y given the data
+
+$$Y \ | \ \theta \thicksim Bernuilli(\theta)$$
+$$P ( Y = 1 | data) = \int_{-\infty}^{\infty}{P(Y=1|\theta) \cdot P(\theta | data) d\theta} \\
+= \frac{B(k + 1, n - k)}{B(k, n - k)}$$
+
+```{r}
+n = as.numeric(length(data.small$COVID))
+k = as.numeric(length(which(data.small$COVID)))
+print(beta(k+1,n-k)/beta(k, n-k))
+```
+
+And here we can see that the probability of a new patient of having covid is 0.362 that is really close to the ML estimator of 0.38
+
+And finally let's try to obtain the same result numerically
+
+## Numerical Study
+
+As we know the distribution of the new observation we will get a random sample and compare.
+
+$$Y \ | \ \theta \thicksim  Bernuilli ( Beta (k, n - k))$$
+
+```{r}
+y.sample = rbinom(n, 1, rbeta(1, k, n - k))
+
+mean(y.sample)
+```
+
+Here we see that the estimated probability is almost the same as previously. 
+
+```{r}
+covid.prob = rbeta(n, k, n - k)
+quantile(covid.prob, probs = c(0.025, 0.975))
+```
+
+And also we see that the confidence interval for the probability of having covid is pretty narrow, so we can be sure that it is correct.
+
+# Data Exploration
+
+Now, we will see if the other variables are useful to predict if a patient has covid or not.
+
+```{r}
+rm(list = setdiff(ls(), c("data", "data.small")))
+
+library(ggplot2) # GGally
+library(GGally)
+
+```
+
+Let's see how the columns distribute with respect to the covid variable.
+
+```{r}
+ggplot(data, aes(x=COVID, y=AGE)) + 
+  geom_boxplot()
+```
+
+Here we see that there is a visible difference between the mean of the covid, so this can be a useful variable to use in our model.
+
+```{r}
+plot(table(data$COVID, data$USMER))
+plot(table(data$COVID, data$MEDICAL_UNIT))
+plot(table(data$COVID, data$SEX))
+plot(table(data$COVID, data$PATIENT_TYPE))
+plot(table(data$COVID, data$PNEUMONIA))
+plot(table(data$COVID, data$DIABETES))
+plot(table(data$COVID, data$COPD))
+plot(table(data$COVID, data$ASTHMA))
+plot(table(data$COVID, data$INMSUPR))
+plot(table(data$COVID, data$HIPERTENSION))
+plot(table(data$COVID, data$OTHER_DISEASE))
+plot(table(data$COVID, data$CARDIOVASCULAR))
+plot(table(data$COVID, data$OBESITY))
+plot(table(data$COVID, data$RENAL_CHRONIC))
+plot(table(data$COVID, data$TOBACCO))
+```
+
+Now, the columns that show off the most are: MEDICAL_UNIT, SEX, PATITENT_TYPE, and PNEUMONIA. This makes sense and we will see after if we are confident that there is a visible difference.
+
+# Frequentist LM
+
+Now let's implement a simple LM model to see how well we can predict a patient to have covid.
+
+```{r}
+rm(list = setdiff(ls(), c("data")))
+
+library(caret)
+library(lattice)
+
+data.small = data[sample(nrow(data), size=10000),]
+
+index.test = createDataPartition(data.small$COVID, p = 0.5, list = FALSE)
+
+data.test = data.small[index.test,]
+data.train = data.small[-index.test,]
+
+rm(index.test)
+```
+
+Now first of all let's try to use all the variables to try to predict if a patient has covid or not.
+
+```{r}
+fit = train(as.factor(COVID) ~ ., data = data.train, method = "glm", family = "binomial")
+
+summary(fit)
+```
+Here we see that there are a lot of variables that are useless. As the p value of the betas is really high for most of them.
+
+```{r}
+confusionMatrix(as.factor(data.test$COVID), predict(fit, newdata = data.test))
+```
+
+Here, we see that we get an accuracy of 0.6578 so it is not that bad, probably it is because we only have a few significant variables as we saw in the correlation graph. So let's try a simpler model.
+
+```{r}
+fit = train(as.factor(COVID) ~ USMER + PNEUMONIA + MEDICAL_UNIT + DIABETES + HIPERTENSION + AGE + PATIENT_TYPE, data = data.train, method = "glm", family = "binomial")
+
+summary(fit)
+```
+Now it is better but the medical unit for example, it is only relevant the level 2 and also for other.
+
+```{r}
+confusionMatrix(as.factor(data.test$COVID), predict(fit, newdata = data.test))
+```
+Here we see that the accuracy is almost the same and the kappa so we have not lost a lot of info.
+
+# Bayesian LM
+
+The frequentest approach is easier but we if we want to compute confidence intervals for the parameters or predictive intervals we cannot do them. That is why we will be using the Bayesian approach to better study the effects of each variable with covid and get more conclusions. The power of the Bayesian approach is that we obtain the posterior distribution of the parameters so we can study better the relation and the significance. So let's start.
+
+```{r message=FALSE}
+library(coda)
+library(MASS)
+library(MCMCpack)
+```
+
+```{r}
+rm(list = setdiff(ls(), c("data", "data.small", "data.test", "data.train")))
+
+fit = MCMClogit(COVID ~ ., data = data.train, burnin=1000, mcmc=210000)
+```
+
+```{r}
+par(mar=c(1, 1, 1, 1))
+plot(fit)
+```
+
+```{r}
+summary(fit)
+```
+
+From the Bayesian point of view, we see that the CI for all the parameters does not contain 0 so theoretically all of the predictors are significant with an alpha = 5%.
+
+## Lasso
+
+```{r message=FALSE, warning=FALSE}
+rm(list = setdiff(ls(), c("data", "data.small", "data.test", "data.train")))
+
+library(monomvn)
+
+x = data.frame(lapply(subset(data.train, select = -c(COVID)), function(x) as.numeric((x))))
+
+adaptTo0And1 = function(col.name, df) {
+  index = which(names(df) == col.name)
+
+  if (length(index) != 0) {
+    df[, index] = ifelse(df[, index] == 2, 0, df[, index])
+  }
+  
+  return(df)
+}
+ x = adaptTo0And1("SEX", x)
+ x = adaptTo0And1("PATIENT_TYPE", x)
+ x = adaptTo0And1("PNEUMONIA", x)
+ x = adaptTo0And1("DIABETES", x)
+ x = adaptTo0And1("COPD", x)
+ x = adaptTo0And1("ASTHMA", x)
+ x = adaptTo0And1("INMSUPR", x)
+ x = adaptTo0And1("HIPERTENSION", x)
+ x = adaptTo0And1("OTHER_DISEASE", x)
+ x = adaptTo0And1("CARDIOVASCULAR", x)
+ x = adaptTo0And1("OBESITY", x)
+ x = adaptTo0And1("RENAL_CHRONIC", x)
+ x = adaptTo0And1("TOBACCO", x)
+ 
+ summary(x)
+
+y = data.train$COVID
+fit = blasso(x, y, mprior = c(0,1))
+```
+ After training the model lets check for stability
+ 
+```{r}
+plot(fit, burnin=200, which="m")
+acf(fit$m)
+```
+
+Here we see that there is some autocorrelation and it is not stable enough so to make sure let's add a lot more samples and some thinning. 
+
+```{r}
+set.seed(111)
+fit = blasso(x, y, mprior = c(0,1), T = 10000, thin = 20)
+```
+
+```{r}
+plot(fit, burnin=1000, which="m")
+acf(fit$m)
+```
+
+Now we do not see any periodicity and it is much stable.
+
+
+```{r}
+plot(fit, burnin=1000, which="s2")
+```
+
+
+```{r}
+plot(fit, burnin=1000, which="lambda2")
+```
+
+And also we see that it is stable so we can trust that it has converged. So let's see the most important variables.
+
+```{r}
+plot(fit, burnin=1000)
+points(drop(fit$b), col=2, pch=20)
+points(drop(fit$b), col=3, pch=18)
+legend("topleft", c("blasso-map", "lasso", "lsr"),
+       col=c(2,2,3), pch=c(21,20,18))
+```
+
+
+```{r}
+s <- summary(fit, burnin=1000)
+print(s$bn0) # probability that each beta coef != zero
+barplot(s$bn0, horiz = TRUE)
+
+```
+
+Here we see that the most important variables are SEX, PATIENT_TYPE, PNEUMONIA, AGE, CARDIOVASCULAR. All in all we can conclude that the post important variables to predict if a patient has covid or not is:
+
+- Sex: we will see but a specific gender is prone to have covid.
+- Patient type: this makes sense because if a patient has been hospitalized it is more likely that it will have covid.
+- Age: elder people are more likely to have covid.
+- Pneumonia: as the covid makes similar symptoms as pneumonia, patients with it are much more likely to have it.
+- Cardiovascular: we can see that covid could be more likely to be contracted if you have cardiovascular problems. 
+
+# Final Model
+
+Finally we will create a model with the variables selected with lasso.
+
+```{r}
+rm(list = setdiff(ls(), c("data", "data.small", "data.test", "data.train")))
+
+library(R2OpenBUGS)
+
+logit.bayes <- function(){
+  for( i in 1 : n ) {
+    COVID.bin[i] ~ dbern(p[i])
+    logit(p[i]) <- b0 + b1 * AGE[i] + b2*SEX.male[i] + b3*PATITENT_TYPE.hospitalized[i] + b4*PNEUMONIA.yes[i] + b5*CARDIOVASCULAR.yes[i]
+  }
+  
+  b0 ~ dnorm(0.0, 1.0E-6)
+  b1 ~ dnorm(0.0, 1.0E-6)
+  b2 ~ dnorm(0.0, 1.0E-6)
+  b3 ~ dnorm(0.0, 1.0E-6)
+  b4 ~ dnorm(0.0, 1.0E-6)
+  b5 ~ dnorm(0.0, 1.0E-6)
+}
+COVID.bin=ifelse(data.train$COVID,1,0)
+n=length(COVID.bin)
+SEX.male = ifelse(data.train$SEX=="male",1,0)
+PATITENT_TYPE.hospitalized = ifelse(data.train$PATIENT_TYPE=="hospitalized",1,0)
+PNEUMONIA.yes = ifelse(data.train$PNEUMONIA=="pneumonia",1,0)
+CARDIOVASCULAR.yes = ifelse(data.train$CARDIOVASCULAR=="cardiovascular",1,0)
+
+data <- list(n=n, COVID.bin=COVID.bin, AGE=data.train$AGE, SEX.male = SEX.male, PATITENT_TYPE.hospitalized = PATITENT_TYPE.hospitalized, PNEUMONIA.yes=PNEUMONIA.yes, CARDIOVASCULAR.yes = CARDIOVASCULAR.yes)
+
+inits <- function(){
+  list(b0 = 1, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0)
+}
+output <- bugs(data = data, inits = inits, parameters.to.save = c("b0", "b1", "b2", "b3", "b4", "b5"), model.file = logit.bayes, n.chains = 1, n.burnin=100, n.iter = 1000)
+```
+
+
+```{r}
+output
+b0.post <-output$sims.list$b0
+b1.post <-output$sims.list$b1
+b2.post <-output$sims.list$b2
+b3.post <-output$sims.list$b3
+b4.post <-output$sims.list$b4
+b5.post <-output$sims.list$b5
+ts.plot(b0.post)
+acf(b0.post)
+ts.plot(b1.post)
+acf(b1.post)
+ts.plot(b2.post)
+acf(b2.post)
+ts.plot(b3.post)
+acf(b3.post)
+ts.plot(b4.post)
+acf(b4.post)
+ts.plot(b5.post)
+acf(b5.post)
+```
+
+We see that the model is stable so let's check some assumptions. First let's create the baseline.
+
+```{r}
+linear = b0.post
+pred.baseline = exp(linear)/(1+exp(linear))
+
+mean(pred.baseline)
+quantile(pred.baseline,c(0.025,0.975))
+```
+
+Here we see that a baseline person has a 0.22 probability of having covid. So now let's compare it to other groups.
+
+## Age
+
+20 years old
+
+```{r}
+linear = b0.post+b1.post * 20
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+50 years old
+
+```{r}
+linear = b0.post+b1.post * 50
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+
+80 years old
+
+```{r}
+linear = b0.post+b1.post * 80
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+Here we can clearly see that the higher the age, the more probability people have to have covid.
+
+## Sex
+
+Female
+
+```{r}
+linear = b0.post
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+Male
+
+```{r}
+linear = b0.post+b2.post * 1
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+We see some indication that the male population has higher probability to have covid but it is not significant.
+
+## Patient Type
+
+Not hospitalized
+
+```{r}
+linear = b0.post
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+Hospitalized
+
+```{r}
+linear = b0.post+b3.post * 1
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+Now, this is really significant and it makes sense. If a patient has been hospitazlied, it is really likely that he/she has covid.
+
+## Pneumonia
+
+Not pneumonia
+
+```{r}
+linear = b0.post
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+Pneumonia
+
+```{r}
+linear = b0.post+b4.post * 1
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+Same conclusions for pneumonia
+
+## Cardiovascular
+
+Not cardiovascular
+
+```{r}
+linear = b0.post
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+Cardiovascular
+
+```{r}
+linear = b0.post+b5.post * 1
+pred.prob = exp(linear)/(1+exp(linear))
+
+mean(pred.prob)
+quantile(pred.prob,c(0.025,0.975))
+```
+
+But for cardiovascular we are not really sure that it plays a big role, so we will not make assumptions.
+
+# Conclusions
+
+We have seen that many variables in this data set are not useful to predict if a patient has covid or not, but with the Bayesian approach and lasso, we have found some that are significant (in this case: age, patient type, and pneumonia) this makes sense. But the power of Bayesian approach is that we obtain the posterior distribution so we can see how significant and if we trust the variable. As for example, the sex and the cardiovascular had really big confidence intervals so we discarded them. This shows the usefulness of the Bayesian approach in comparison with the frequentest one.
